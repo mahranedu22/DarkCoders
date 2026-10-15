@@ -1,0 +1,44 @@
+{
+  "services": [
+    {
+      "name": "api-gateway",
+      "status": "running",
+      "version": "2.3.8",
+      "env": "staging",
+      "lastRestart": "2026-10-14T08:00:00Z"
+    },
+    {
+      "name": "worker-01",
+      "status": "running",
+      "version": "2.3.8",
+      "env": "staging",
+      "lastRestart": "2026-10-13T12:00:00Z"
+    },
+    {
+      "name": "worker-02",
+      "status": "crash-looping",
+      "version": "2.3.7",
+      "env": "staging",
+      "lastRestart": "2026-10-15T02:30:00Z"
+    },
+    {
+      "name": "redis-cache",
+      "status": "running",
+      "version": "7.2.0",
+      "env": "production",
+      "lastRestart": "2026-10-01T00:00:00Z"
+    }
+  ],
+  "builds": [
+    {
+      "version": "2.4.1",
+      "status": "ready",
+      "builtAt": "2026-10-15T10:00:00Z"
+    },
+    {
+      "version": "2.3.8",
+      "status": "deployed",
+      "builtAt": "2026-10-14T06:00:00Z"
+    }
+  ]
+}
