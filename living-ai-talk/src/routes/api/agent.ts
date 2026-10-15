@@ -220,8 +220,18 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
       // Strip markdown code fences if present (e.g. ```json ... ```)
       const cleanJson = responseText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
       try {
-        JSON.parse(cleanJson);
-        responseText = cleanJson;
+        const parsed = JSON.parse(cleanJson) as Record<string, unknown>;
+        if (typeof parsed === "object" && parsed !== null) {
+          if (!parsed["kind"]) parsed["kind"] = parsed["action_proposal"] ? "action_proposal" : "screen";
+          if (!parsed["screen"] && typeof parsed["text"] === "string") {
+            parsed["screen"] = { text: parsed["text"], choices: [], navigation: [] };
+          }
+          if (parsed["action_proposal"] === undefined) parsed["action_proposal"] = null;
+          if (!Array.isArray(parsed["app_commands"])) parsed["app_commands"] = [];
+          responseText = JSON.stringify(parsed);
+        } else {
+          throw new Error("Not object");
+        }
       } catch {
         // Not valid JSON — wrap it
         responseText = JSON.stringify({
