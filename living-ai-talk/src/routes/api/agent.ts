@@ -214,8 +214,9 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
 
     if (functionCalls.length === 0) {
       // No tool call — this is the final text response
-      const textPart = parts.find((p) => p.text);
-      let responseText = textPart?.text ?? "";
+      // Take the non-thought text parts (Gemini 2.5/3.5 puts reasoning in parts with thought: true)
+      const answerParts = parts.filter((p) => p.text && !(p as { thought?: boolean }).thought);
+      let responseText = (answerParts.length > 0 ? answerParts.map((p) => p.text).join("") : parts.find((p) => p.text)?.text) ?? "";
 
       // Strip markdown code fences if present (e.g. ```json ... ```)
       const cleanJson = responseText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
