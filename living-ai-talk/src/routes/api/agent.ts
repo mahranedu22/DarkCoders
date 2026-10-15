@@ -217,9 +217,11 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
       const textPart = parts.find((p) => p.text);
       let responseText = textPart?.text ?? "";
 
-      // Try to parse as JSON screen response; if invalid, wrap in a screen
+      // Strip markdown code fences if present (e.g. ```json ... ```)
+      const cleanJson = responseText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
       try {
-        JSON.parse(responseText);
+        JSON.parse(cleanJson);
+        responseText = cleanJson;
       } catch {
         // Not valid JSON — wrap it
         responseText = JSON.stringify({
@@ -275,7 +277,7 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
       ...currentContents,
       {
         role: "model",
-        parts: [{ functionCall: { name: fc.name, args: fc.args } }],
+        parts: geminiData.candidates?.[0]?.content?.parts ?? [{ functionCall: { name: fc.name, args: fc.args } }],
       },
       {
         role: "user",
