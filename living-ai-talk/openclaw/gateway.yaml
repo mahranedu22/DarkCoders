@@ -10,10 +10,10 @@ gateway:
     mode: none # Local loopback dev mode; token mode also supported via OPENCLAW_API_KEY
 
 models:
-  default: gemini-3.5-flash
+  default: gemini-2.5-flash
   routing:
     - provider: google
-      model: gemini-3.5-flash
+      model: gemini-2.5-flash
       apiKeyEnv: GEMINI_API_KEY
     - provider: local
       endpoint: "http://localhost:11434/v1"

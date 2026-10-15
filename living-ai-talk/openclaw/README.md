@@ -32,6 +32,7 @@ openclaw/
 ├── README.md               # This guide
 ├── gateway.yaml            # Gateway server & model routing configuration
 ├── agents/                 # Custom OpenClaw agent definitions
+│   ├── SOUL.md             # DevOps agent soul, voice demeanor & safety charter
 │   ├── orchestrator.yaml   # Root intent classifier & conversational router
 │   └── devops.yaml         # DevOps & incident response specialist
 ├── skills/                 # OpenClaw skill definitions & tool schemas
@@ -78,5 +79,5 @@ openclaw/
 OPENCLAW_GATEWAY_URL="http://localhost:18789"
 OPENCLAW_API_KEY=""
 GEMINI_API_KEY="your-gemini-api-key-here"
-GEMINI_MODEL="gemini-3.5-flash"
+GEMINI_MODEL="gemini-2.5-flash"
 ```

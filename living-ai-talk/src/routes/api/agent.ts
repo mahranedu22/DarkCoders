@@ -1,28 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { SYSTEM_PROMPT, planContextMessage } from "@/lib/voice/prompt";
+import { resolveGatewayModel } from "@/lib/ai/models";
+import { AGENTS } from "@/lib/settings/voice";
 
 type Turn = { role: "user" | "assistant"; text: string };
-
-/**
- * DevOps agent system prompt — extends the base console prompt with
- * tool-aware instructions and the devops persona.
- */
-const DEVOPS_SYSTEM = [
-  SYSTEM_PROMPT,
-  "",
-  "ROLE: You are a DevOps and Incident Response specialist. You manage staging services, monitor system health, inspect logs, and handle deployments and restarts. You have access to real tools that read actual system state and modify real files.",
-  "",
-  "TOOL USAGE RULES:",
-  "- Read-only tools (ops.system_diagnostics, ops.inspect_logs, ops.list_services) run directly and return real data.",
-  "- State-changing tools (ops.deploy, ops.restart_service) are DESTRUCTIVE. When the user asks to deploy or restart, you MUST propose the action via action_proposal in your JSON response so the human can approve or deny it. Do NOT call these tools directly on first request.",
-  "- When a user message says 'APPROVED:' followed by a tool description, THEN you may call the approved tool.",
-  "- When a user message says 'DENIED:' followed by a tool description, acknowledge the denial and suggest alternatives.",
-  "- Production deploys are never allowed via voice — refuse them outright.",
-  "",
-  "TOOL RESULTS: When you receive tool results, incorporate the real data into your spoken response. Never fabricate or embellish the data. If a tool fails, report the real error message.",
-  "",
-  "APP CONTROLS: set_agent enum includes: general, ciso, planner, coder, devops.",
-].join("\n");
 
 export const Route = createFileRoute("/api/agent")({
   server: {
@@ -31,14 +12,25 @@ export const Route = createFileRoute("/api/agent")({
         let turns: Turn[] = [];
         let context: string | undefined;
         let agentName: string | undefined;
+        let rawModel: string | undefined;
+
         try {
-          const body = (await request.json()) as { turns?: Turn[]; context?: unknown; model?: unknown; agent?: unknown };
-          if (Array.isArray(body.turns)) turns = body.turns.filter((t) => t && typeof t.text === "string");
+          const body = (await request.json()) as {
+            turns?: Turn[];
+            context?: unknown;
+            model?: unknown;
+            agent?: unknown;
+          };
+          if (Array.isArray(body.turns)) {
+            turns = body.turns.filter((t) => t && typeof t.text === "string");
+          }
           if (typeof body.context === "string") context = body.context;
-          if (typeof body.agent === "string") agentName = body.agent;
+          if (typeof body.agent === "string" && body.agent) agentName = body.agent;
+          if (typeof body.model === "string" && body.model) rawModel = body.model;
         } catch {
           turns = [];
         }
+
         if (!turns.length) {
           return new Response(JSON.stringify({ error: "Nothing to answer" }), {
             status: 400,
@@ -46,41 +38,43 @@ export const Route = createFileRoute("/api/agent")({
           });
         }
 
-        // If agent is "devops", use the Gemini tool-calling flow
-        // Otherwise fall back to the original OpenClaw gateway flow
-        if (agentName === "devops") {
-          return handleDevopsAgent(request, turns, context);
+        // 1. Model Validation per AGENTS.md and models.test.ts:
+        // "Built-in replies accept only allowlisted model names (src/lib/ai/models.ts);
+        // unknown picks error instead of being swapped, so a chosen task model is never silently replaced."
+        const resolvedModel = resolveGatewayModel(rawModel);
+        if (!resolvedModel) {
+          return new Response(
+            JSON.stringify({
+              error: `Model "${rawModel}" is not offered or allowlisted for built-in execution.`,
+            }),
+            { status: 400, headers: { "Content-Type": "application/json" } },
+          );
         }
 
-        // --- Original gateway path (unchanged) ---
-        const { streamResponses } = await import("@/lib/ai/responses.server");
-        const { resolveGatewayModel } = await import("@/lib/ai/models");
-        const { OUTPUT_FORMAT } = await import("@/lib/voice/prompt");
-        const model = resolveGatewayModel(undefined);
-        const plan = planContextMessage(context);
-        const input: Record<string, unknown>[] = [
-          { role: "system", content: [{ type: "input_text", text: SYSTEM_PROMPT }] },
-          ...(plan ? [{ role: "system", content: [{ type: "input_text", text: plan }] }] : []),
-          ...turns.slice(-12).map((turn) => ({
-            role: turn.role,
-            content: [
-              turn.role === "assistant"
-                ? { type: "output_text", text: turn.text }
-                : { type: "input_text", text: turn.text },
-            ],
-          })),
-        ];
-        return streamResponses(request, input, { text: { format: OUTPUT_FORMAT } }, model!);
+        // 2. Agent Resolution: extract from body.agent or parse from context role header
+        if (!agentName && context) {
+          const match = context.match(/Agent role \((\w+)\)/);
+          if (match?.[1]) agentName = match[1];
+        }
+        if (!agentName) agentName = "general";
+
+        // 3. Route all agents through our tool-calling engine
+        return handleAgentExecution(request, turns, agentName, context);
       },
     },
   },
 });
 
 // ---------------------------------------------------------------------------
-// DevOps Agent — Gemini tool-calling with REAL tool execution
+// Unified Agent Engine — Gemini tool-calling with REAL tool execution & HITL
 // ---------------------------------------------------------------------------
 
-async function handleDevopsAgent(request: Request, turns: Turn[], context?: string) {
+async function handleAgentExecution(
+  request: Request,
+  turns: Turn[],
+  agentName: string,
+  context?: string,
+) {
   const apiKey = process.env["GEMINI_API_KEY"];
   if (!apiKey) {
     return new Response(
@@ -89,22 +83,41 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
     );
   }
 
-  const { toolsForGemini, resolveToolName, requiresApproval, TOOLS } = await import("@/lib/tools/index");
-  const { executeTool } = await import("@/lib/tools/executor");
+  const { toolsForGemini, resolveToolName, requiresApproval, TOOLS } = await import(
+    "@/lib/tools/index.ts"
+  );
+  const { executeTool } = await import("@/lib/tools/executor.ts");
 
   const plan = planContextMessage(context);
+  const profile = AGENTS[agentName] ?? AGENTS["general"]!;
 
-  // Build Gemini messages
-  const systemInstruction = DEVOPS_SYSTEM + (plan ? `\n\nPlanning context:\n${plan}` : "");
+  // Dynamic system prompt tailored to the active agent persona
+  const agentPrompt = [
+    SYSTEM_PROMPT,
+    "",
+    `ACTIVE AGENT ROLE (${agentName}): ${profile.persona}`,
+    "",
+    "TOOL USAGE AND SAFETY CHARTER:",
+    "- You have access to real infrastructure tools (ops.system_diagnostics, ops.list_services, ops.inspect_logs, ops.deploy, ops.restart_service).",
+    "- Read-only tools (ops.system_diagnostics, ops.inspect_logs, ops.list_services) run directly and report real ground-truth data.",
+    "- State-changing operations (ops.deploy, ops.restart_service) are DANGEROUS. You MUST NEVER execute them on first request. You must emit an action_proposal screen with clear title, summary, and risk tier for the human operator to Approve or Deny via the console UI.",
+    "- When a user message begins with 'APPROVED:' followed by an action, then and only then may you invoke that mutating tool.",
+    "- When a user message begins with 'DENIED:', acknowledge the cancellation and suggest alternative investigation paths.",
+    "- Production deploys are strictly prohibited via conversational voice commands — refuse them outright.",
+    "- Zero fake results: if an operation fails, report the exact error message. Never fabricate telemetry or imaginary statuses.",
+    "- Keep screen.text natural, concise, and conversational for text-to-speech reading aloud (no raw tables or long logs in spoken text).",
+    "",
+    "APP CONTROLS: set_agent enum includes: general, ciso, planner, coder, devops.",
+    ...(plan ? ["", `PLANNING CONTEXT:\n${plan}`] : []),
+  ].join("\n");
+
   const contents = turns.slice(-12).map((turn) => ({
     role: turn.role === "assistant" ? "model" : "user",
     parts: [{ text: turn.text }],
   }));
 
-  // Gemini tool definitions
   const tools = [{ function_declarations: toolsForGemini() }];
 
-  // JSON output schema for screen responses
   const screenSchema = {
     type: "OBJECT" as const,
     properties: {
@@ -125,7 +138,10 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
               required: ["id", "label", "value"],
             },
           },
-          navigation: { type: "ARRAY" as const, items: { type: "STRING" as const, enum: ["back", "cancel", "home"] } },
+          navigation: {
+            type: "ARRAY" as const,
+            items: { type: "STRING" as const, enum: ["back", "cancel", "home"] },
+          },
         },
         required: ["text", "choices", "navigation"],
       },
@@ -146,7 +162,21 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
         items: {
           type: "OBJECT" as const,
           properties: {
-            name: { type: "STRING" as const, enum: ["set_view", "show_tab", "set_agent", "set_speaking_rate", "open_settings", "close_settings", "standby", "set_accent", "set_style", "open_headset"] },
+            name: {
+              type: "STRING" as const,
+              enum: [
+                "set_view",
+                "show_tab",
+                "set_agent",
+                "set_speaking_rate",
+                "open_settings",
+                "close_settings",
+                "standby",
+                "set_accent",
+                "set_style",
+                "open_headset",
+              ],
+            },
             value: { type: "STRING" as const },
           },
           required: ["name", "value"],
@@ -156,7 +186,6 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
     required: ["kind", "screen", "action_proposal", "app_commands"],
   };
 
-  // Tool-calling loop (max 5 iterations to prevent infinite loops)
   let currentContents = [...contents];
   const MAX_TOOL_ROUNDS = 5;
 
@@ -165,61 +194,82 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
 
     const geminiBody: Record<string, unknown> = {
       contents: currentContents,
-      systemInstruction: { parts: [{ text: systemInstruction }] },
+      systemInstruction: { parts: [{ text: agentPrompt }] },
       generationConfig: {
         temperature: 0.7,
         maxOutputTokens: 2048,
-        ...(isLastRound ? { responseMimeType: "application/json", responseSchema: screenSchema } : {}),
+        ...(isLastRound
+          ? { responseMimeType: "application/json", responseSchema: screenSchema }
+          : {}),
       },
       ...(!isLastRound ? { tools } : {}),
     };
 
-    const modelName = process.env["GEMINI_MODEL"] || "gemini-3.5-flash";
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    const candidateModels = [
+      process.env["GEMINI_MODEL"],
+      "gemini-3-flash-preview",
+      "gemini-3.1-flash-lite",
+      "gemini-3.5-flash",
+    ].filter((m): m is string => Boolean(m) && m !== "gemini-2.5-flash");
 
-    let geminiResponse: Response;
-    try {
-      geminiResponse = await fetch(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(geminiBody),
-        signal: request.signal,
-      });
-    } catch (err) {
-      if (request.signal.aborted) return new Response(null, { status: 499 });
-      return new Response(
-        JSON.stringify({ error: `Could not reach Gemini API: ${(err as Error).message}` }),
-        { status: 502, headers: { "Content-Type": "application/json" } },
-      );
+    let geminiResponse: Response | undefined;
+    for (const modelCandidate of candidateModels) {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:generateContent?key=${apiKey}`;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          geminiResponse = await fetch(geminiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(geminiBody),
+            signal: request.signal,
+          });
+          if (geminiResponse.ok) break;
+          if (geminiResponse.status !== 503 && geminiResponse.status !== 429) break;
+          await new Promise((r) => setTimeout(r, 600));
+        } catch (err) {
+          if (request.signal.aborted) return new Response(null, { status: 499 });
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+      if (geminiResponse?.ok) break;
     }
 
-    if (!geminiResponse.ok) {
-      const detail = (await geminiResponse.text()).slice(0, 500);
+    if (!geminiResponse || !geminiResponse.ok) {
+      const detail = geminiResponse ? (await geminiResponse.text()).slice(0, 500) : "No response";
       return new Response(
-        JSON.stringify({ error: `Gemini API returned ${geminiResponse.status}: ${detail}` }),
-        { status: geminiResponse.status, headers: { "Content-Type": "application/json" } },
+        JSON.stringify({ error: `Gemini API returned ${geminiResponse?.status ?? 502}: ${detail}` }),
+        { status: geminiResponse?.status ?? 502, headers: { "Content-Type": "application/json" } },
       );
     }
 
     const geminiData = (await geminiResponse.json()) as {
       candidates?: Array<{
-        content?: { parts?: Array<{ text?: string; functionCall?: { name: string; args: Record<string, unknown> } }> };
+        content?: {
+          parts?: Array<{
+            text?: string;
+            thought?: boolean;
+            functionCall?: { name: string; args: Record<string, unknown> };
+          }>;
+        };
       }>;
     };
 
     const parts = geminiData.candidates?.[0]?.content?.parts ?? [];
-
-    // Check for function calls
     const functionCalls = parts.filter((p) => p.functionCall);
 
     if (functionCalls.length === 0) {
-      // No tool call — this is the final text response
-      // Take the non-thought text parts (Gemini 2.5/3.5 puts reasoning in parts with thought: true)
+      // Final text response: filter out reasoning thought tokens
       const answerParts = parts.filter((p) => p.text && !(p as { thought?: boolean }).thought);
-      let responseText = (answerParts.length > 0 ? answerParts.map((p) => p.text).join("") : parts.find((p) => p.text)?.text) ?? "";
+      let responseText =
+        (answerParts.length > 0
+          ? answerParts.map((p) => p.text).join("")
+          : parts.find((p) => p.text)?.text) ?? "";
 
-      // Strip markdown code fences if present (e.g. ```json ... ```)
-      const cleanJson = responseText.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+      const cleanJson = responseText
+        .replace(/^```(?:json)?\s*\n?/i, "")
+        .replace(/\n?```\s*$/i, "")
+        .trim();
+
       try {
         const parsed = JSON.parse(cleanJson) as Record<string, unknown>;
         if (typeof parsed === "object" && parsed !== null) {
@@ -234,7 +284,6 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
           throw new Error("Not object");
         }
       } catch {
-        // Not valid JSON — wrap it
         responseText = JSON.stringify({
           kind: "screen",
           screen: { text: responseText, choices: [], navigation: [] },
@@ -243,7 +292,6 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
         });
       }
 
-      // Stream the response as SSE (compatible with existing frontend)
       return streamAsSSE(responseText);
     }
 
@@ -252,14 +300,12 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
     const toolName = resolveToolName(fc.name);
     const toolDef = TOOLS[toolName];
 
-    // If tool requires approval, return an action_proposal instead of executing
+    // If tool requires approval, return an action_proposal screen instead of executing
     if (requiresApproval(toolName)) {
-      // Check if the user already approved this action
       const lastUserMsg = turns[turns.length - 1]?.text ?? "";
       const isApproved = lastUserMsg.toUpperCase().startsWith("APPROVED:");
 
       if (!isApproved) {
-        // Return a screen with action_proposal for human approval
         const proposalResponse = JSON.stringify({
           kind: "screen",
           screen: {
@@ -283,7 +329,6 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
     // Execute the tool for real
     const result = await executeTool(toolName, fc.args);
 
-    // Add the model's function call and our result to the conversation
     currentContents = [
       ...currentContents,
       {
@@ -292,29 +337,27 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
       },
       {
         role: "user",
-        parts: [{
-          functionResponse: {
-            name: fc.name,
-            response: result,
+        parts: [
+          {
+            functionResponse: {
+              name: fc.name,
+              response: result,
+            },
           },
-        }],
+        ],
       },
     ] as typeof currentContents;
-
-    // Continue the loop — Gemini will process the tool result
   }
 
-  // If we exhausted all rounds, return an error
   return new Response(
     JSON.stringify({ error: "Agent exceeded maximum tool-calling rounds" }),
     { status: 500, headers: { "Content-Type": "application/json" } },
   );
 }
 
-/** Streams a complete text response as SSE events (compatible with the voice console frontend). */
 function streamAsSSE(fullText: string): Response {
   const encoder = new TextEncoder();
-  const chunkSize = 80; // characters per SSE event for realistic streaming
+  const chunkSize = 80;
 
   const stream = new ReadableStream({
     start(controller) {
@@ -325,10 +368,8 @@ function streamAsSSE(fullText: string): Response {
           offset += chunkSize;
           const event = `data: ${JSON.stringify({ type: "response.output_text.delta", delta: chunk })}\n\n`;
           controller.enqueue(encoder.encode(event));
-          // Small delay for natural streaming feel
           setTimeout(send, 15);
         } else {
-          // Send done event
           const doneEvent = `data: ${JSON.stringify({ type: "response.output_text.done", text: fullText })}\n\n`;
           controller.enqueue(encoder.encode(doneEvent));
           controller.close();
