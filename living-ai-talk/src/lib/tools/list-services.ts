@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { ToolResult } from "./index";
+import type { ToolResult } from "./index.ts";
 
 const STATE_PATH = path.resolve(process.cwd(), "openclaw", "state", "services.json");
 
@@ -40,7 +40,7 @@ export function writeServicesState(state: ServicesState): void {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n", "utf-8");
 }
 
-export async function listServices(args: { status?: string }): Promise<ToolResult> {
+export async function listServices(args: { status?: string } = {}): Promise<ToolResult> {
   try {
     const state = readServicesState();
     let services = state.services;

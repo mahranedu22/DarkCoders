@@ -1,0 +1,45 @@
+# OpenClaw Gateway Configuration
+# DarkCoders OpenClaw Assignment — Native Gateway Setup (No Docker required)
+
+version: "2026.1"
+
+gateway:
+  port: 18789
+  bind: loopback
+  auth:
+    mode: none # Local loopback dev mode; token mode also supported via OPENCLAW_API_KEY
+
+models:
+  default: gemini-3.5-flash
+  routing:
+    - provider: google
+      model: gemini-3.5-flash
+      apiKeyEnv: GEMINI_API_KEY
+    - provider: local
+      endpoint: "http://localhost:11434/v1"
+      model: llama3
+
+agents:
+  orchestrator:
+    name: "OpenClaw Orchestrator"
+    path: "./agents/orchestrator.yaml"
+    isRoot: true
+
+  devops:
+    name: "DevOps & Incident Response Specialist"
+    path: "./agents/devops.yaml"
+    skills:
+      - ops-diagnostics
+      - ops-services
+
+skills:
+  - name: ops-diagnostics
+    path: "./skills/ops-diagnostics"
+    risk: none
+
+  - name: ops-services
+    path: "./skills/ops-services"
+    risk: medium-to-high
+    requiresApproval:
+      - ops.deploy
+      - ops.restart_service

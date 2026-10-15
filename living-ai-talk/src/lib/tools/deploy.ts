@@ -10,8 +10,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { ToolResult } from "./index";
-import { readServicesState, writeServicesState } from "./list-services";
+import type { ToolResult } from "./index.ts";
+import { readServicesState, writeServicesState } from "./list-services.ts";
 
 const LOG_PATH = path.resolve(process.cwd(), "openclaw", "state", "service.log");
 

@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { ToolResult } from "./index";
+import type { ToolResult } from "./index.ts";
 
 const LOG_PATH = path.resolve(process.cwd(), "openclaw", "state", "service.log");
 
@@ -20,10 +20,10 @@ export async function inspectLogs(args: { lines?: number; filter?: string }): Pr
     const raw = fs.readFileSync(LOG_PATH, "utf-8");
     let lines = raw.split("\n").filter((l) => l.trim().length > 0);
 
-    // Apply severity filter if provided
+    // Apply filter if provided (matches severity or any keyword like worker-02 or OOM)
     if (args.filter) {
-      const filterUpper = args.filter.toUpperCase();
-      lines = lines.filter((l) => l.includes(`[${filterUpper}]`));
+      const needle = args.filter.toLowerCase();
+      lines = lines.filter((l) => l.toLowerCase().includes(needle));
     }
 
     // Take last N lines

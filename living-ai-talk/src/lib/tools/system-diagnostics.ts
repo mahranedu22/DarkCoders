@@ -4,7 +4,7 @@
  */
 import * as os from "node:os";
 
-import type { ToolResult } from "./index";
+import type { ToolResult } from "./index.ts";
 
 export async function systemDiagnostics(): Promise<ToolResult> {
   try {

@@ -85,9 +85,11 @@ export function toolsForGemini(): Array<{ name: string; description: string; par
   }));
 }
 
-/** Maps the Gemini-safe name (underscores) back to the dotted tool name. */
-export function resolveToolName(geminiName: string): string {
-  return geminiName.replace(/^ops_/, "ops.");
+/** Maps tool names (with underscore or without namespace) back to the canonical dotted name. */
+export function resolveToolName(name: string): string {
+  if (name.startsWith("ops_")) return name.replace(/^ops_/, "ops.");
+  if (!name.startsWith("ops.")) return `ops.${name}`;
+  return name;
 }
 
 /** Returns true if the tool requires human approval before execution. */

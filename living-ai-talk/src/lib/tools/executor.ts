@@ -2,12 +2,12 @@
  * Tool executor — dispatches tool calls to the correct handler.
  * All tools do REAL work (node:os, node:fs) — no fake/simulated data.
  */
-import { resolveToolName, type ToolResult } from "./index";
-import { systemDiagnostics } from "./system-diagnostics";
-import { inspectLogs } from "./inspect-logs";
-import { listServices } from "./list-services";
-import { deploy } from "./deploy";
-import { restartService } from "./restart-service";
+import { resolveToolName, type ToolResult } from "./index.ts";
+import { systemDiagnostics } from "./system-diagnostics.ts";
+import { inspectLogs } from "./inspect-logs.ts";
+import { listServices } from "./list-services.ts";
+import { deploy } from "./deploy.ts";
+import { restartService } from "./restart-service.ts";
 
 export async function executeTool(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
   const resolved = resolveToolName(toolName);

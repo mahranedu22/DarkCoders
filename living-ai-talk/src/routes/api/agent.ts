@@ -174,7 +174,8 @@ async function handleDevopsAgent(request: Request, turns: Turn[], context?: stri
       ...(!isLastRound ? { tools } : {}),
     };
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const modelName = process.env["GEMINI_MODEL"] || "gemini-3.5-flash";
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
     let geminiResponse: Response;
     try {
@@ -337,9 +338,9 @@ function streamAsSSE(fullText: string): Response {
 function formatToolTitle(toolName: string, args: Record<string, unknown>): string {
   switch (toolName) {
     case "ops.deploy":
-      return `Deploy v${args.version} to ${args.service}`;
+      return `Deploy v${args["version"]} to ${args["service"]}`;
     case "ops.restart_service":
-      return `Restart ${args.service}`;
+      return `Restart ${args["service"]}`;
     default:
       return toolName;
   }
@@ -348,9 +349,9 @@ function formatToolTitle(toolName: string, args: Record<string, unknown>): strin
 function formatToolSummary(toolName: string, args: Record<string, unknown>): string {
   switch (toolName) {
     case "ops.deploy":
-      return `Deploy build version ${args.version} to the ${args.service} service. This will update the service version and mark the build as deployed.`;
+      return `Deploy build version ${args["version"]} to the ${args["service"]} service. This will update the service version and mark the build as deployed.`;
     case "ops.restart_service":
-      return `Restart the ${args.service} service${args.reason ? ` — reason: ${args.reason}` : ""}. This will reset the service status and log the restart.`;
+      return `Restart the ${args["service"]} service${args["reason"] ? ` — reason: ${args["reason"]}` : ""}. This will reset the service status and log the restart.`;
     default:
       return `Execute ${toolName}`;
   }
