@@ -277,7 +277,12 @@ async function handleAgentExecution(
           if (!parsed["screen"] && typeof parsed["text"] === "string") {
             parsed["screen"] = { text: parsed["text"], choices: [], navigation: [] };
           }
-          if (parsed["action_proposal"] === undefined) parsed["action_proposal"] = null;
+          const lastUserMsg = (turns[turns.length - 1]?.text ?? "").trim();
+          const userApproved = /^APPROVED(\s+ACTION|\s*:)/i.test(lastUserMsg);
+          if (parsed["action_proposal"] === undefined || userApproved) {
+            parsed["action_proposal"] = null;
+            parsed["kind"] = "screen";
+          }
           if (!Array.isArray(parsed["app_commands"])) parsed["app_commands"] = [];
           responseText = JSON.stringify(parsed);
         } else {
@@ -300,10 +305,26 @@ async function handleAgentExecution(
     const toolName = resolveToolName(fc.name);
     const toolDef = TOOLS[toolName];
 
-    // If tool requires approval, return an action_proposal screen instead of executing
+    // If tool requires approval, check operator decision
     if (requiresApproval(toolName)) {
-      const lastUserMsg = turns[turns.length - 1]?.text ?? "";
-      const isApproved = lastUserMsg.toUpperCase().startsWith("APPROVED:");
+      const lastUserMsg = (turns[turns.length - 1]?.text ?? "").trim();
+      const isApproved = /^APPROVED(\s+ACTION|\s*:)/i.test(lastUserMsg);
+      const isDenied = /^DENIED(\s+ACTION|\s*:)/i.test(lastUserMsg);
+
+      if (isDenied) {
+        const title = formatToolTitle(toolName, fc.args);
+        const deniedResponse = JSON.stringify({
+          kind: "screen",
+          screen: {
+            text: `Action cancelled. The operation (${title}) was denied by the operator.`,
+            choices: [],
+            navigation: ["back"],
+          },
+          action_proposal: null,
+          app_commands: [],
+        });
+        return streamAsSSE(deniedResponse);
+      }
 
       if (!isApproved) {
         const proposalResponse = JSON.stringify({

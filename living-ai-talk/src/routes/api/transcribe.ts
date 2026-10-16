@@ -37,36 +37,60 @@ export const Route = createFileRoute("/api/transcribe")({
             const base64Data = Buffer.from(arrayBuffer).toString("base64");
             const mimeType = file.type && file.type.startsWith("audio/") ? file.type : "audio/wav";
 
-            let modelName = process.env["GEMINI_MODEL"] || "gemini-3.5-flash";
-            if (modelName === "gemini-2.5-flash") modelName = "gemini-3.5-flash";
-            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+            const candidateModels = [
+              process.env["GEMINI_MODEL"],
+              "gemini-2.5-flash",
+              "gemini-3-flash-preview",
+              "gemini-3.1-flash-lite",
+              "gemini-3.5-flash",
+            ].filter((m): m is string => Boolean(m));
 
-            const geminiRes = await fetch(geminiUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              signal: request.signal,
-              body: JSON.stringify({
-                contents: [
-                  {
-                    parts: [
-                      {
-                        text: "Transcribe this audio recording verbatim. Output only the spoken words, with no explanations, no preamble, and no markdown fences.",
-                      },
-                      {
-                        inlineData: {
-                          mimeType,
-                          data: base64Data,
+            let geminiRes: Response | undefined;
+            for (const modelCandidate of candidateModels) {
+              const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:generateContent?key=${apiKey}`;
+              for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                  geminiRes = await fetch(geminiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    signal: request.signal,
+                    body: JSON.stringify({
+                      contents: [
+                        {
+                          parts: [
+                            {
+                              text: "Transcribe this audio recording verbatim. Output only the spoken words, with no explanations, no preamble, and no markdown fences.",
+                            },
+                            {
+                              inlineData: {
+                                mimeType,
+                                data: base64Data,
+                              },
+                            },
+                          ],
                         },
-                      },
-                    ],
-                  },
-                ],
-              }),
-            });
+                      ],
+                    }),
+                  });
+                  if (geminiRes.ok) break;
+                  if (geminiRes.status !== 503 && geminiRes.status !== 429) break;
+                  await new Promise((r) => setTimeout(r, 600));
+                } catch {
+                  if (request.signal.aborted) return new Response(null, { status: 499 });
+                  await new Promise((r) => setTimeout(r, 600));
+                }
+              }
+              if (geminiRes?.ok) break;
+            }
 
-            if (!geminiRes.ok) {
-              const errText = await geminiRes.text();
-              throw new Error(`Gemini transcription error (${geminiRes.status}): ${errText.slice(0, 200)}`);
+            if (!geminiRes || !geminiRes.ok) {
+              return new Response(
+                JSON.stringify({ error: "Transcription service is temporarily unavailable. Please try speaking again or type your message." }),
+                {
+                  status: geminiRes?.status ?? 502,
+                  headers: { "Content-Type": "application/json" },
+                },
+              );
             }
 
             const data = (await geminiRes.json()) as {
@@ -86,13 +110,15 @@ export const Route = createFileRoute("/api/transcribe")({
                 Connection: "keep-alive",
               },
             });
-          } catch (error) {
+          } catch {
             if (request.signal.aborted) return new Response(null, { status: 499 });
-            const message = error instanceof Error ? error.message : "Transcription failed";
-            return new Response(JSON.stringify({ error: message }), {
-              status: 500,
-              headers: { "Content-Type": "application/json" },
-            });
+            return new Response(
+              JSON.stringify({ error: "Transcription failed. Please try speaking again or type your message." }),
+              {
+                status: 500,
+                headers: { "Content-Type": "application/json" },
+              },
+            );
           }
         }
 
